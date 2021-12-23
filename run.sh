@@ -1,3 +1,5 @@
 #!/bin/bash
 
-make & ./main
+make
+./tinyrenderer
+echo "done"
