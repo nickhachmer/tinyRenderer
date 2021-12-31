@@ -1,5 +1,6 @@
 #include <vector>
 #include <cmath>
+#include <algorithm>
 #include "tgaimage.h"
 #include "model.h"
 #include "geometry.h"
@@ -55,62 +56,61 @@ void line(vec2 t0, vec2 t1, TGAImage &image, const TGAColor &color) {
     line(t0.x, t0.y, t1.x, t1.y, image, color);
 }
 
-// returns the minimum x and y in the first vector
-//     and the maximum x and y in the second vector
-vec2* boundingBox(vec2& t0, vec2& t1, vec2& t2, double maxWidth, double maxHeight) {
-    vec2* bbx = new vec2[2];
+vec3 barycentric(vec2 p0, vec2 p1, vec2 p2, vec2 P) {
+    // create vectors from the triangle points
+    vec3 xcomp, ycomp;
 
-    bbx[0].x = std::min(t0.x, std::min(t1.x, t2.x));
-    bbx[0].y = std::min(t0.y, std::min(t1.y, t2.y));
+    // x compoent of the vectors
+    xcomp[0] = p1.x - p0.x;
+    xcomp[1] = p2.x - p0.x;
+    xcomp[2] = p0.x - P.x;
 
-    bbx[1].x = std::min(maxWidth, std::max(t0.x, std::max(t1.x, t2.x)));
-    bbx[1].y = std::min(maxHeight, std::max(t0.y, std::max(t1.y, t2.y)));
+    // y component of the vectors
+    ycomp[0] = p1.y - p0.y;
+    ycomp[1] = p2.y - p0.y;
+    ycomp[2] = p0.y - P.y;
 
-    return bbx;
+    // with the x and y compoonents in a vector, he have a system of two linear equations
+
+    // use the cross product to compute the intersection of the two lines
+    vec3 result = cross(xcomp, ycomp);
+
+    if (std::abs(result[2]) < 1) return {0, 0, -1};
+
+    // simply the vector so that the z component is 1.
+    double u = result.x / result.z;
+    double v = result.y / result.z;
+
+    return {u, v, 1 - u - v};
 }
 
 void triangle(vec2 t0, vec2 t1, vec2 t2, TGAImage &image, const TGAColor& color) { 
     
-    vec2* bbx = boundingBox(t0, t1, t2, image.get_width() - 1, image.get_height() - 1);
+    // create bounding box
+    //     the minimum x and y in the first vector
+    //     and the maximum x and y in the second vector
+    double maxWidth = image.get_width() - 1;
+    double maxHeight = image.get_height() - 1;
+
+    vec2 bbx[2];
+    bbx[0].x = std::min({t0.x, t1.x, t2.x});
+    bbx[0].y = std::min({t0.y, t1.y, t2.y});
+    bbx[1].x = std::min(maxWidth, std::max({t0.x, t1.x, t2.x}));
+    bbx[1].y = std::min(maxHeight, std::max({t0.y, t1.y, t2.y}));
 
     // iterate overall points in the bounding box to check if it is inside the triangle
     for (int x = bbx[0].x; x <= bbx[1].x; x++) {
         for (int y = bbx[0].y; y <= bbx[1].y; y++) {
             
-            // create vectors from the triangle points
-            vec3 xcomp, ycomp;
+            vec2 P = { (double) x, (double) y};
+            vec3 bary = barycentric(t0, t1, t2, P);
 
-            // x compoent of the vectors
-            xcomp[0] = t1.x - t0.x;
-            xcomp[1] = t2.x - t0.x;
-            xcomp[2] = t0.x - x;
+            // check if point P is inside the triangle
+            if (bary[0] < 0 || bary[1] < 0 || bary[2] < 0) continue;
 
-            // y component of the vectors
-            ycomp[0] = t1.y - t0.y;
-            ycomp[1] = t2.y - t0.y;
-            ycomp[2] = t0.y - y;
-
-            // with the x and y compoonents in a vector, he have a system of two linear equations
-
-            // use the cross product to compute the intersection of the two lines
-            vec3 result = cross(xcomp, ycomp);
-
-            if (std::abs(result[2]) < 1) continue;
-
-            // simply the vector so that the z component is 1.
-            double u = result.x / result.z;
-            double v = result.y / result.z;
-
-            // check if inside triangle
-            if (u <= 1 && u >= 0
-                && v <= 1 && v >= 0
-                && u + v <= 1) {
-                image.set(x, y, color);
-            }
+            image.set(x, y, color);
         }
     }
-
-    delete bbx;
 }
 
 int main(int argc, char** argv) {
