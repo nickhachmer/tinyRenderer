@@ -8,7 +8,7 @@
 const TGAColor white = TGAColor(255, 255, 255, 255);
 const TGAColor red   = TGAColor(255, 0,   0,   255);
 const TGAColor green = TGAColor(0, 255,   0,   255);
-Model *model = NULL;
+Model* model = NULL;
 const int width  = 800;
 const int height = 800;
 
@@ -75,7 +75,8 @@ vec3 barycentric(vec2 p0, vec2 p1, vec2 p2, vec2 P) {
     // use the cross product to compute the intersection of the two lines
     vec3 result = cross(xcomp, ycomp);
 
-    if (std::abs(result[2]) < 1) return {0, 0, -1};
+    // triangle is degenerate (all points lay on a line) if ..
+    if (std::abs(result[2]) < 0.01) return {-1, -1, -1};
 
     // simply the vector so that the z component is 1.
     double u = result.x / result.z;
@@ -84,31 +85,50 @@ vec3 barycentric(vec2 p0, vec2 p1, vec2 p2, vec2 P) {
     return {u, v, 1 - u - v};
 }
 
-void triangle(vec2 t0, vec2 t1, vec2 t2, TGAImage &image, const TGAColor& color) { 
+vec3 barycentric(vec3 p0, vec3 p1, vec3 p2, vec3 P) {
+    return barycentric({p0.x, p0.y}, {p1.x, p1.y}, {p2.x, p2.y}, {P.x, P.y});
+}
+
+void triangle(vec3* pts, vec2* uvs, float *zbuffer, TGAImage &image, const double intensity) { 
     
     // create bounding box
     //     the minimum x and y in the first vector
     //     and the maximum x and y in the second vector
     double maxWidth = image.get_width() - 1;
     double maxHeight = image.get_height() - 1;
-
     vec2 bbx[2];
-    bbx[0].x = std::min({t0.x, t1.x, t2.x});
-    bbx[0].y = std::min({t0.y, t1.y, t2.y});
-    bbx[1].x = std::min(maxWidth, std::max({t0.x, t1.x, t2.x}));
-    bbx[1].y = std::min(maxHeight, std::max({t0.y, t1.y, t2.y}));
+
+    bbx[0].x = std::min({pts[0].x, pts[1].x, pts[2].x});
+    bbx[0].y = std::min({pts[0].y, pts[1].y, pts[2].y});
+    bbx[1].x = std::min(maxWidth, std::max({pts[0].x, pts[1].x, pts[2].x}));
+    bbx[1].y = std::min(maxHeight, std::max({pts[0].y, pts[1].y, pts[2].y}));
 
     // iterate overall points in the bounding box to check if it is inside the triangle
     for (int x = bbx[0].x; x <= bbx[1].x; x++) {
         for (int y = bbx[0].y; y <= bbx[1].y; y++) {
             
-            vec2 P = { (double) x, (double) y};
-            vec3 bary = barycentric(t0, t1, t2, P);
+            vec3 P = { (double) x, (double) y, 0};
+            vec3 bary = barycentric(pts[0], pts[1], pts[2], P);
 
-            // check if point P is inside the triangle
+            // check if point P is outside the triangle - don't draw it if it is
             if (bary[0] < 0 || bary[1] < 0 || bary[2] < 0) continue;
 
-            image.set(x, y, color);
+            // calculate the z coordinate of point P from the triangle
+            float z = pts[0].z * bary[0] + pts[1].z * bary[1] + pts[2].z * bary[2];
+            
+            // use the z buffer as a way to determine if a point lies on top of another
+            // if a point has a large z value than previous point that has been drawn then 
+            // we draw on top of the point and store the new maximum z value.
+            int idx = x + width * y;
+            if (z > zbuffer[idx]) {
+
+                zbuffer[idx] = z;
+
+                // use the barycentric coordinates find the corresponding point in the uv triangle
+                vec2 uv = uvs[0] + (uvs[1] - uvs[0]) * bary[0] + (uvs[2] - uvs[0]) * bary[1];
+                
+                image.set(x, y, model->diffuse(uv) * intensity);
+            }
         }
     }
 }
@@ -119,6 +139,12 @@ int main(int argc, char** argv) {
         model = new Model(argv[1]);
     } else {
         model = new Model("obj/african_head/african_head.obj");
+    }
+
+    // initialize the z buffer
+    float* zbuffer = new float[width * height];
+    for (int i = width * height; i > 0; i--) {
+        zbuffer[i] = -std::numeric_limits<float>::max();
     }
 
     // light going into the screen (I think....)
@@ -132,25 +158,34 @@ int main(int argc, char** argv) {
         normal.normalize();
 
         // use the normal to calculate how intense the light should be on the face
-        float intensity = light * normal;;
+        float intensity = light * normal;
 
         // backface culling - removing triangles that are facing the opposite direction
         if (intensity < 0) continue;
 
-        vec2 screen_coords[3];
-        for ( int vertex = 0; vertex < 3; vertex++ ) {            
-            vec3 world_coords = model->vert(face, vertex);
-            world_coords.x = (world_coords.x + 1.) / 2. * width;
-            world_coords.y = (world_coords.y + 1.) / 2. * width;
+        // obtain the vertices of the triangle in screen space
+        vec3 screen_coords[3];
+        vec2 uvs[3];
+        for ( int vertex = 0; vertex < 3; vertex++ ) {
 
-            screen_coords[vertex] = vec2(world_coords.x, world_coords.y);
+            vec3 world_coords = model->vert(face, vertex);
+
+            // scale the x and y coordinates to the screen dimensions
+            world_coords.x = (world_coords.x + 1.) / 2. * width;
+            world_coords.y = (world_coords.y + 1.) / 2. * height;
+            world_coords.z = world_coords.z;
+
+            screen_coords[vertex] = vec3(world_coords.x, world_coords.y, world_coords.z);
+            uvs[vertex] = model->uv(face, vertex);
         }
 
-        triangle(screen_coords[0], screen_coords[1], screen_coords[2], image, TGAColor(intensity * 255, intensity * 255, intensity * 255, 255));
+        // rasterize the triangle (draw the pixels on the image)
+        triangle(screen_coords, uvs, zbuffer, image, intensity);        
     }
 
     //image.flip_vertically(); // i want to have the origin at the left bottom corner of the image
     image.write_tga_file("output.tga");
     delete model;
+    delete zbuffer;
 	return 0;
 }
