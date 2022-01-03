@@ -4,6 +4,7 @@
 #include "tgaimage.h"
 #include "model.h"
 #include "geometry.h"
+#include <iostream>
 
 const TGAColor white = TGAColor(255, 255, 255, 255);
 const TGAColor red   = TGAColor(255, 0,   0,   255);
@@ -11,6 +12,20 @@ const TGAColor green = TGAColor(0, 255,   0,   255);
 Model* model = NULL;
 const int width  = 800;
 const int height = 800;
+const int depth  = 255;
+
+// I dont fully understand what is going on here...
+mat<4,4> myviewport(int x, int y, int w, int h) {
+    mat<4,4> m = mat<4,4>::identity();
+    m[0][3] = x+w/2.f;
+    m[1][3] = y+h/2.f;
+    m[2][3] = depth/2.f;
+
+    m[0][0] = w/2.f;
+    m[1][1] = h/2.f;
+    m[2][2] = depth/2.f;
+    return m;
+}
 
 void line(int x0, int y0, int x1, int y1, TGAImage &image, const TGAColor &color) {
     
@@ -103,9 +118,14 @@ void triangle(vec3* pts, vec2* uvs, float *zbuffer, TGAImage &image, const doubl
     bbx[1].x = std::min(maxWidth, std::max({pts[0].x, pts[1].x, pts[2].x}));
     bbx[1].y = std::min(maxHeight, std::max({pts[0].y, pts[1].y, pts[2].y}));
 
+// this directive tells to compiler to parallelize this block of code
+#pragma omp parallel for
     // iterate overall points in the bounding box to check if it is inside the triangle
-    for (int x = bbx[0].x; x <= bbx[1].x; x++) {
-        for (int y = bbx[0].y; y <= bbx[1].y; y++) {
+    for (int x = (int) bbx[0].x; x <= (int) bbx[1].x; x++) {
+        for (int y = (int) bbx[0].y; y <= (int) bbx[1].y; y++) {
+            
+            // dont draw points that are off screen
+            if (x < 0 || y < 0) continue;
             
             vec3 P = { (double) x, (double) y, 0};
             vec3 bary = barycentric(pts[0], pts[1], pts[2], P);
@@ -149,6 +169,12 @@ int main(int argc, char** argv) {
 
     // light going into the screen (I think....)
     const vec3 light(0, 0, 1);
+    
+    // create our transform matrices
+    mat<4,4> viewPort   = myviewport(width/8, height/8, width*3/4, height*3/4);
+    mat<4,4> projection = mat<4,4>::identity();
+    // set specific element to give us perspective projection
+    projection[3][2] = - 1.f / 1;
 
 	TGAImage image(width, height, TGAImage::RGB);
     for ( int face = 0; face < model->nfaces(); face++ ) {
@@ -167,15 +193,14 @@ int main(int argc, char** argv) {
         vec3 screen_coords[3];
         vec2 uvs[3];
         for ( int vertex = 0; vertex < 3; vertex++ ) {
-
             vec3 world_coords = model->vert(face, vertex);
 
-            // scale the x and y coordinates to the screen dimensions
-            world_coords.x = (world_coords.x + 1.) / 2. * width;
-            world_coords.y = (world_coords.y + 1.) / 2. * height;
-            world_coords.z = world_coords.z;
+            vec4 result = viewPort * projection * embed<4>(world_coords);
+            result[0] = result[0] / result[3];
+            result[1] = result[1] / result[3];
+            result[2] = result[2] / result[3];
 
-            screen_coords[vertex] = vec3(world_coords.x, world_coords.y, world_coords.z);
+            screen_coords[vertex] = proj<3>(result);
             uvs[vertex] = model->uv(face, vertex);
         }
 
